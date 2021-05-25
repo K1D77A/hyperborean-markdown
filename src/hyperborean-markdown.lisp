@@ -12,6 +12,11 @@
   "A hash table of lambdas associated with strings, these strings are special strings 
 that have their own execution rules.")
 
+(defparameter *inline-syntax* ()
+  "A plist of plists associating before and after functions used to perform calls that 
+wrap around other transformation. The plists look like '(:syntax <key> :before <before> 
+:after <after>")
+
 (define-condition hyper-condition ()
   ((message
     :accessor message
@@ -39,6 +44,33 @@ that have their own execution rules.")
              (where obj)
              (message obj)))))
 
+(defun new-inline-syntax (key before-fun after-fun)
+  "Associate a before and after function with the KEY within *inline-syntax*. If KEY is not
+first found within *syntax* then signals 'key-missing-fun."
+  (if (getf *syntax* key)
+      (setf (getf *inline-syntax* key)
+            (list :syntax key :before before-fun :after after-fun))
+      (error 'key-missing-fun
+             :where "*syntax*" :key key
+             :message "Trying to create a new inline-syntax for a key that doesn't exist.")))
+
+(defun get-inline (key)
+  (let ((inline (getf *inline-syntax* key)))
+    (if inline
+        inline
+        (getf *inline-syntax* :%default))))
+
+(defmacro def-inline-syntax ((key arg-name environment-name)
+                             before-fun
+                             after-fun)
+  `(new-inline-syntax ,key
+                      (lambda (stream ,arg-name ,environment-name)
+                        (declare (ignorable stream ,arg-name ,environment-name))
+                        (locally ,before-fun))
+                      (lambda (stream ,arg-name ,environment-name)
+                        (declare (ignorable stream ,arg-name ,environment-name))
+                        (locally ,after-fun))))
+                        
 
 (defun new-special (string fun)
   "Associated FUN with STRING in the hash-table *specials*"
@@ -91,10 +123,10 @@ then signals the condition 'key-missing-fun."
          'key-missing-fun :where "syntax" :key key
                           :message "couldn't find key. Perhaps your List is invalid."))))
 
-;; (defun add-spacing (stream env)
-;;   (let ((current-space (getf env :current-depth)))
-;;     (unless (zerop current-space))
-;;     (format stream "~A" (make-string (getf env :current-depth) :initial-element #\Space))))
+(defun add-spacing (stream env)
+  (let ((current-space (getf env :current-depth)))
+    (unless (zerop current-space))
+    (format stream "~A" (make-string (getf env :current-depth) :initial-element #\Space))))
 
 (defun indent (env)
   "Increment :current-depth by 4."
@@ -168,8 +200,10 @@ then signals the condition 'key-missing-fun."
 (def-syntax (:image string env (:href))
   (format stream "![~A](~A)" string href))
 
-(def-syntax (:link string env (:href))
-  (format stream "[~A](~A)" string href))
+(def-syntax (:link string env (:href :title))
+  (if title 
+      (format stream "[~A](~A \"~A\")" string href title)
+      (format stream "[~A](~A)" string href)))
 
 (def-syntax (:hrule string env)
   (format stream "***"))
@@ -177,52 +211,35 @@ then signals the condition 'key-missing-fun."
 (def-syntax (:linked-image string env (:path :description :href))
   (format stream "[![~A](~A \"~A\")](~A)" string path description href))
 
-(def-syntax (:%newline string env ())
-  (format stream "~%"))
-
 (def-syntax (:%special string env ())
   (funcall (gethash string *specials*) stream env))
 
 (def-special ("" env)
   (format stream "~%"))
 
+(def-special ("**" env)
+  (format stream "**"))
+
+(def-inline-syntax (:bold form env)
+                   (format stream "**")
+                   (format stream "**~%"))
+
+(def-inline-syntax (:unordered-list form env)
+                   (format stream "- ")
+                   (format stream "~%"))
+
+(def-inline-syntax (:blockquote form env)
+                   (format stream ">")
+                   (format stream "~%"))
+
+(def-inline-syntax (:%default form env)
+                   nil
+                   (format stream "~A" (make-string *default-spacing*
+                                                    :initial-element #\Newline)))
+
 ;;;last one we need to do is references but this requires special processing rules
 ;;;as references have to be collected and added onto the end.
 
-(defparameter *md*
-  '((:h1 "abc")
-    "oof"
-    ""
-    (:h3 "Who are we?")
-    (:blockquote     
-     "oof"
-     ""
-     (:code-block "coof")
-     "oof")
-    ""
-    (:code-block "oof")
-    (:h2 "abcd")
-    (:link :href "https://oof.com" "ooga")
-    (:linked-image
-     :path "~/oof.jpg"
-     :description "an oof image"
-     :href "imgur.com/oof"
-     "an oof image")    
-    (:unordered-list "def")
-    (:unordered-list "abc")    
-    (:ordered-list 
-     "oof"
-     "boof")
-    (:ordered-list "boof"
-     (:unordered-list "coof")
-     (:unordered-list
-      (:h2 "omega based")))
-    "lu lu lu I want some apples"
-    (:bold "bold")
-    (:italic "italic")
-    (:blockquote
-     "abc"
-     "def")))
 
 (defun contains-options-p (list)
   "Checks if the key at (first LIST) has options associated with it, and if it does 
@@ -247,8 +264,8 @@ like  (:link :href \"https://oof.com\" \"ooga\") should eval to a list like:
 
 (defmacro with-resetting-keys (environment keys &body body)
   "Stores the values associated with KEYS found in the plist ENVIRONMENT, 
-stores them before the execution of body then resets those keys after 
-the execution of body back to the before values."
+stores them before the evaluation of BODY then resets the keys back to their previous 
+values."
   (let* ((vals-keys (loop :for key :in keys
                           :collect (list (gensym) key)))
          (genned-setf
@@ -263,7 +280,9 @@ the execution of body back to the before values."
          ,@genned-setf))))
 
 (defgeneric initiate-environment (list)
-  (:documentation "This method is used to generate the initial environment plist that is passed to every syntax function within the parser. If you wish to modify the environment for 
+  (:documentation "This method is used to generate the initial environment
+ plist that is passed to every syntax function within the parser.
+ If you wish to modify the environment for 
 your own syntax or specials, or you want to modify some of the default values then 
 you can just create your own version of this that is specialized on a list, perform the 
 modifications with (setf (getf ...)..) and finally return the list."))
@@ -274,7 +293,10 @@ modifications with (setf (getf ...)..) and finally return the list."))
   (let ((environment
           (list :current-depth 0
                 :options ()
+                :current-inline (get-inline :%default)
                 :item-n 1
+                :add-spacing-p t
+                :add-newline-p t
                 :current-syntax (getf *syntax* :%default)
                 :references ())))
     (call-next-method environment)))
@@ -302,6 +324,7 @@ with ((list list)) and making sure you return the list."))
         (*spacing* (initiate-spacing ())))
     (declare (special *spacing*))
     (mapc (lambda (element)
+            (with-resetting-keys environment (current-inline)
             (typecase element
               (string (process-list stream
                                     (list (if (gethash element *specials*)
@@ -318,19 +341,24 @@ with ((list list)) and making sure you return the list."))
              (let* ((syn (first list))
                     (ele (second list)))
                (setf (getf environment :current-syntax) syn)
-               (add-spacing stream environment) 
+               (when (getf environment :add-spacing-p)
+                 (add-spacing stream environment))
                (execute syn stream ele environment)
-               (format stream "~A" (make-string *default-spacing*
-                                                :initial-element #\Newline))))
+               (when (getf environment :add-newline-p)
+                 (format stream "~A" (make-string *default-spacing*
+                                                  :initial-element #\Newline)))))
            (process-list (stream list environment)
              (declare (special *spacing*))
-             (let ((sym (first list))
-                   (options? (if (contains-options-p list)
-                                 (extract-options list)
-                                 nil)))
-               (with-resetting-keys environment (item-n options)
+             (let* ((sym (first list))
+                    (options? (if (contains-options-p list)
+                                  (extract-options list)
+                                  nil))
+                    (inline (get-inline sym)))
+               (with-resetting-keys environment (item-n options current-inline
+                                                        add-newline-p add-spacing-p)
                  (when options? 
                    (setf (getf environment :options) options?))
+                 (setf (getf environment :current-inline) inline)
                  (mapc (lambda (arg)
                          (typecase arg
                            (string (process-string stream (list
@@ -339,11 +367,61 @@ with ((list list)) and making sure you return the list."))
                                                                sym)
                                                            arg)
                                                    environment))
-                           (list (with-indenting environment
-                                   (process-list stream arg environment)))))
+                           (list (let* ((sym (first arg)))
+                                   (destructuring-bind (&key before after
+                                                        &allow-other-keys)
+                                       (getf environment :current-inline)
+                                     (setf (getf environment :add-newline-p) nil)
+                                     (funcall before stream arg environment)
+                                     (if (or (eql sym :ordered-list)
+                                             (eql sym :unordered-list))
+                                         (with-indenting environment
+                                           (setf (getf environment :add-spacing-p) nil)
+                                           (add-spacing stream environment)
+                                           (process-list stream arg environment))
+                                         (process-list stream arg environment))
+                                     (funcall after stream arg environment))))))
                        (if options?
                            (list (first list) (car (last list)))
                            list))))))
     (process-list stream list environment)))
 
 
+
+(defparameter *md*
+  '((:h1 "abc")
+    "oof"
+    (:h3 "Who are we?")
+    (:blockquote     
+     "oof"
+     (:bold "oof")
+     (:code-block "coof")
+     "oof")
+    (:bold "oof"
+     "doof"
+     (:italic "oof")
+     (:link :href "https://oof.com" "ooga"))
+    (:code-block "oof")
+    (:h2 "abcd")
+    (:bold 
+     (:link :href "https://oof.com" "ooga"))
+    (:linked-image
+     :path "~/oof.jpg"
+     :description "an oof image"
+     :href "imgur.com/oof"
+     "an oof image")    
+    (:unordered-list "def")
+    (:unordered-list "abc")    
+    (:ordered-list 
+     "oof"
+     "boof")
+    (:ordered-list "boof"
+     (:unordered-list "coof")
+     (:unordered-list
+      (:h2 "omega based")))
+    "lu lu lu I want some apples"
+    (:bold "bold")
+    (:italic "italic")
+    (:blockquote
+     "abc"
+     "def")))
