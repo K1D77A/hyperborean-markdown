@@ -324,7 +324,6 @@ with ((list list)) and making sure you return the list."))
         (*spacing* (initiate-spacing ())))
     (declare (special *spacing*))
     (mapc (lambda (element)
-            (with-resetting-keys environment (current-inline)
             (typecase element
               (string (process-list stream
                                     (list (if (gethash element *specials*)
@@ -336,56 +335,6 @@ with ((list list)) and making sure you return the list."))
               (otherwise (error "unknown"))))
           list)))
 
-(defun process-list (stream list environment)
-  (labels ((process-string (stream list environment)
-             (let* ((syn (first list))
-                    (ele (second list)))
-               (setf (getf environment :current-syntax) syn)
-               (when (getf environment :add-spacing-p)
-                 (add-spacing stream environment))
-               (execute syn stream ele environment)
-               (when (getf environment :add-newline-p)
-                 (format stream "~A" (make-string *default-spacing*
-                                                  :initial-element #\Newline)))))
-           (process-list (stream list environment)
-             (declare (special *spacing*))
-             (let* ((sym (first list))
-                    (options? (if (contains-options-p list)
-                                  (extract-options list)
-                                  nil))
-                    (inline (get-inline sym)))
-               (with-resetting-keys environment (item-n options current-inline
-                                                        add-newline-p add-spacing-p)
-                 (when options? 
-                   (setf (getf environment :options) options?))
-                 (setf (getf environment :current-inline) inline)
-                 (mapc (lambda (arg)
-                         (typecase arg
-                           (string (process-string stream (list
-                                                           (if (gethash arg *specials*)
-                                                               :%special
-                                                               sym)
-                                                           arg)
-                                                   environment))
-                           (list (let* ((sym (first arg)))
-                                   (destructuring-bind (&key before after
-                                                        &allow-other-keys)
-                                       (getf environment :current-inline)
-                                     (setf (getf environment :add-newline-p) nil)
-                                     (funcall before stream arg environment)
-                                     (if (or (eql sym :ordered-list)
-                                             (eql sym :unordered-list))
-                                         (with-indenting environment
-                                           (setf (getf environment :add-spacing-p) nil)
-                                           (add-spacing stream environment)
-                                           (process-list stream arg environment))
-                                         (process-list stream arg environment))
-                                     (funcall after stream arg environment))))))
-                       (if options?
-                           (list (first list) (car (last list)))
-                           list))))))
-    (process-list stream list environment)))
-
 
 
 (defparameter *md*
@@ -394,8 +343,10 @@ with ((list list)) and making sure you return the list."))
     (:h3 "Who are we?")
     (:blockquote     
      "oof"
-     (:bold "oof")
+     (:bold "oof"
+      "woof")
      (:code-block "coof")
+     "oof"
      "oof")
     (:bold "oof"
      "doof"
