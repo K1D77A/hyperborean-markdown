@@ -209,7 +209,8 @@ then signals the condition 'key-missing-fun."
   (format stream "***"))
 
 (def-syntax (:linked-image string env (:path :description :href))
-  (format stream "[![~A](~A \"~A\")](~A)" string path description href))
+  (format stream "[![~A](~A \"~A\")](~A)" string path description href)
+  (print href *debug-io*))
 
 (def-syntax (:%special string env ())
   (funcall (gethash string *specials*) stream env))
@@ -222,15 +223,27 @@ then signals the condition 'key-missing-fun."
 
 (def-inline-syntax (:bold form env)
                    (format stream "**")
-                   (format stream "**~%"))
+                   (format stream "**"))
+
+(def-inline-syntax (:italic form env)
+                   (format stream "*")
+                   (format stream "*"))
+
+(def-inline-syntax (:bold-and-italic form env)
+                   (format stream "***")
+                   (format stream "***"))
 
 (def-inline-syntax (:unordered-list form env)
                    (format stream "- ")
-                   (format stream "~%"))
+                   (format stream " "))
 
 (def-inline-syntax (:blockquote form env)
-                   (format stream ">")
-                   (format stream "~%"))
+                   (format stream "> ")
+                   (format stream ""))
+
+(def-inline-syntax (:code-block form env)
+                   (format stream "``` ")
+                   (format stream " ```"))
 
 (def-inline-syntax (:%default form env)
                    nil
@@ -258,9 +271,10 @@ then searches for those options within LIST. If it has no options returns nil."
   "Attempts to extract the options keys and their values from LIST. For example a list 
 like  (:link :href \"https://oof.com\" \"ooga\") should eval to a list like: 
 '(:href \"https://oof.com\")."
-  (loop :for (ele . rest) :on (rest list) :by #'cddr
-        :while rest
-        :appending (list ele (first rest))))
+  (let ((keys (getf (getf *syntax* (first list)) :options)))
+    (loop :for key :in keys
+          :if (find key (rest list))
+            :appending (list key (getf (rest list) key)))))
 
 (defmacro with-resetting-keys (environment keys &body body)
   "Stores the values associated with KEYS found in the plist ENVIRONMENT, 
@@ -293,7 +307,7 @@ modifications with (setf (getf ...)..) and finally return the list."))
   (let ((environment
           (list :current-depth 0
                 :options ()
-                :current-inline (get-inline :%default)
+                :current-inline (list (get-inline :%default))
                 :item-n 1
                 :add-spacing-p t
                 :add-newline-p t
@@ -319,48 +333,97 @@ with ((list list)) and making sure you return the list."))
         (getf list :blockquote) 1)
   list)
 
+(defmacro destructuring-environment (environment &body body)
+  `(destructuring-bind (&key current-depth options current-inline item-n
+                          add-spacing-p add-newline-p current-syntax references
+                        &allow-other-keys)
+       ,environment
+     (declare (ignorable current-depth options current-inline item-n
+                         add-spacing-p add-newline-p current-syntax references))
+     (locally ,@body)))
+
 (defun parse-to-md (stream list)
   (let ((environment (initiate-environment ()))
         (*spacing* (initiate-spacing ())))
     (declare (special *spacing*))
-    (mapc (lambda (element)
-            (typecase element
-              (string (process-list stream
-                                    (list (if (gethash element *specials*)
-                                              :%special
-                                              :%default)
-                                          element)
-                                    environment))
-              (list (process-list stream element environment))
-              (otherwise (error "unknown"))))
-          list)))
+    (%process-list stream list environment)))
 
+(defun %process-list (stream list environment)
+  (destructuring-environment environment
+    (let ((item (first list))
+          (remainder (rest list)))
+      (typecase item
+        (null
+         (pop (getf environment :current-inline))
+         nil)
+        (string
+         (%execute-inlines stream item environment (or (rest current-inline)
+                                                       current-inline))
+         (%process-list stream remainder environment))
+        (list
+         (%process-list stream item environment)
+         (%process-list stream remainder environment))
+        (keyword
+         (with-resetting-keys environment (current-syntax options)
+           (push (get-inline item) (getf environment :current-inline))
+           (setf (getf environment :current-syntax) (getf *syntax* item))
+           (if (contains-options-p list)
+               (let ((options (extract-options list)))
+                 (setf (getf environment :options) options)
+                 (%process-list stream
+                                (set-difference remainder options :test #'equal)
+                                environment))
+               (%process-list stream remainder environment))))))))
 
+(defun %execute-inlines (stream item environment inlines)
+  (destructuring-bind (&key fun options &allow-other-keys)
+      (getf environment :current-syntax)
+    (declare (ignorable options))
+    (mapc (lambda (inline)
+            (destructuring-bind (&key before &allow-other-keys)
+                inline
+              (funcall before stream item environment)))
+          (reverse inlines))
+    (funcall fun stream item environment)
+    (mapc (lambda (inline)
+            (destructuring-bind (&key after &allow-other-keys)
+                inline
+              (funcall after stream item environment)))
+          inlines)))
 
 (defparameter *md*
-  '((:h1 "abc")
+  '("oof"
+    (:h1 "abc")
     "oof"
-    (:h3 "Who are we?")
+    (:h3 "Who are we?")    
     (:blockquote     
+     "1"
+     (:bold "2"
+      "3")
+     (:code-block 
+      (:blockquote
+       (:bold 
+        "bbb"
+        (:bold "10"))))
+     "5"
+     "6")
+    (:bold
      "oof"
-     (:bold "oof"
-      "woof")
-     (:code-block "coof")
-     "oof"
-     "oof")
-    (:bold "oof"
      "doof"
-     (:italic "oof")
-     (:link :href "https://oof.com" "ooga"))
+     (:italic "stucked")
+     (:italic "oof"))    
+    (:unordered-list
+     "link1"
+     (:bold-and-italic (:link :href "https://oof.com" "ooga"))
+     (:unordered-list "abc"))
     (:code-block "oof")
     (:h2 "abcd")
-    (:bold 
-     (:link :href "https://oof.com" "ooga"))
+    (:link :href "https://oof.com" "ooga")
     (:linked-image
      :path "~/oof.jpg"
      :description "an oof image"
      :href "imgur.com/oof"
-     "an oof image")    
+     "an oof image")
     (:unordered-list "def")
     (:unordered-list "abc")    
     (:ordered-list 
