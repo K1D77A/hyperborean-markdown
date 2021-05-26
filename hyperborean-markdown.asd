@@ -6,8 +6,7 @@
   :license  "GPL3"
   :version "0.0.1"
   :serial t
-  :depends-on (#:alexandria
-               #:str)
+  :depends-on (#:alexandria)
   :components ((:module "src"
                 :serial t
                 :components

@@ -226,8 +226,10 @@ then signals the condition 'key-missing-fun."
   ;;(setf (getf env :disable-before-p) t)
   (format stream "- ~A" string))
 
-(def-syntax (:code-block string env)
-  (format stream "```~A```" string))
+(def-syntax (:code-block string env (:lang))
+  (if lang
+      (format stream "```~A~% ~A~%```" lang string)
+      (format stream "```~%~A~%```" string)))
 
 (def-syntax (:image string env (:href))
   (format stream "![~A](~A)" string href))
@@ -266,7 +268,8 @@ then signals the condition 'key-missing-fun."
                    (format stream ""))
 
 (def-inline-syntax (:unordered-list form env)
-                   (format stream "- ")
+                   (progn (add-spacing stream env))
+                   ;;(format stream "- "))
                    (format stream ""))
 
 (def-inline-syntax (:bold-and-italic form env)
@@ -275,6 +278,10 @@ then signals the condition 'key-missing-fun."
 
 (def-inline-syntax (:blockquote form env)
                    (format stream "> ")
+                   (format stream ""))
+
+(def-inline-syntax (:blockquote1 form env)
+                   (format stream ">> ")
                    (format stream ""))
 
 (def-inline-syntax (:code-block form env)
@@ -416,13 +423,24 @@ with ((list list)) and making sure you return the list."))
         (keyword
          (with-resetting-keys environment (current-syntax options item-n)
            (push (get-inline item) (getf environment :current-inline))
-           (setf (getf environment :current-syntax) (getf *syntax* item))
+           (let ((syn (getf *syntax* item)))
+             (unless syn
+               (error 'key-missing-fun :where "syntax" :key item
+                                       :message "No function found for that key"))
+             (setf (getf environment :current-syntax) syn))
            (if (contains-options-p list)
                (multiple-value-bind (options remainder)
                    (extract-options list)
                  (setf (getf environment :options) options)
                  (%process-list stream remainder environment))
                (%process-list stream remainder environment))))))))
+
+(defun clean-inlines (list)
+  list)
+  ;; (loop :for inline :in list
+  ;;       :unless (or (eql (second inline) :ordered-list)
+  ;;                   (eql (second inline) :unordered-list))
+  ;;         :collect inline))
 
 (defun %execute-inlines (stream item environment inlines)
   (destructuring-bind (&key fun options &allow-other-keys)
@@ -433,14 +451,26 @@ with ((list list)) and making sure you return the list."))
                 inline
               (unless (getf environment :disable-before-p)
                 (funcall before stream item environment))))
-          (reverse inlines))
+          (reverse (clean-inlines inlines)))
     (funcall fun stream item environment)
     (mapc (lambda (inline)
             (destructuring-bind (&key after &allow-other-keys)
                 inline
               (unless (getf environment :disable-after-p)
                 (funcall after stream item environment))))
-          inlines)))
+          (clean-inlines inlines))))
+
+(defmacro with-markdown ((stream) &body body)
+  `(parse-to-md ,stream ',@body))
+
+(defmacro with-markdown-to-string (&body body)
+  (alexandria:with-gensyms (stream)
+    `(with-output-to-string (,stream)
+       (parse-to-md ,stream ',@body))))
+
+(defmacro with-markdown-to-file ((pathname &rest keys &key &allow-other-keys)
+                                 &body body)
+  `(alexandria:write-string-into-file (with-markdown-to-string ,@body) ,pathname ,@keys))
 
 (defparameter *md*
   '("oof"
@@ -469,7 +499,9 @@ with ((list list)) and making sure you return the list."))
      ;;     (:bold-and-italic (:link :href "https://oof.com" "ooga"))
      (:unordered-list
       "abc"
-      "def"))
+      "def"
+      (:unordered-list
+       "oof")))
     (:code-block "oof")
     (:h2 "abcd")
     (:link :href "https://oof.com" "ooga")
