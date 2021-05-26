@@ -70,7 +70,7 @@ If you put "" at your top level a newline will be added
 
 ```lisp
  (with-markdown-to-file ("./README.md" :if-exists :supersede)
-      ((:h1 "Hyperborean Markdown")
+      `((:h1 "Hyperborean Markdown")
        "This is a library that has taken a stab at creating a *Lisp* -> *MD* library. So that you can translate Lisp objects into Markdown, perhaps you wish to create MD templates based off of some lisp objects you have, idk its up to you."
        (:h2 "Current Problems")
        (:unordered-list 
@@ -110,8 +110,7 @@ If you put "" at your top level a newline will be added
                        :description 'an oof image'
                        :href 'imgur.com/oof'
                        'an oof image')")
-       (:h2 "Extra")
        "If you put "" at your top level a newline will be added"
-       ""
+       "))"
 
 ```

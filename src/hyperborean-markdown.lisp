@@ -461,12 +461,12 @@ with ((list list)) and making sure you return the list."))
           (clean-inlines inlines))))
 
 (defmacro with-markdown ((stream) &body body)
-  `(parse-to-md ,stream ',@body))
+  `(parse-to-md ,stream ,@body))
 
 (defmacro with-markdown-to-string (&body body)
   (alexandria:with-gensyms (stream)
     `(with-output-to-string (,stream)
-       (parse-to-md ,stream ',@body))))
+       (parse-to-md ,stream ,@body))))
 
 (defmacro with-markdown-to-file ((pathname &rest keys &key &allow-other-keys)
                                  &body body)
