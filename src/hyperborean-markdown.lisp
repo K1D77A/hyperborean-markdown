@@ -5,6 +5,9 @@
 (defparameter *default-spacing* 1
   "The default spacing applies after executing a syntax function.")
 
+(defparameter *default-tab-size* 4
+  "Inserted when adding spacing for lists")
+
 (defparameter *syntax* ()
   "A plist of plists associating information regarding how to parse lisp to md.")
 
@@ -36,12 +39,39 @@ wrap around other transformation. The plists look like '(:syntax <key> :before <
     :initarg :where
     :type string
     :documentation "The name of the location where lookup happened"))
-  (:documentation "Signalled when a lookup was performed for a key that doesn't exist.")
+  (:documentation "Signalled when a lookup was performed for a key that does't exist.")
   (:report
    (lambda (obj stream)
      (format stream "Key: ~A. Where: ~A~%Message: ~A"
              (key obj)
              (where obj)
+             (message obj)))))
+
+(define-condition unknown-option (hyper-condition)
+  ((key
+    :accessor key
+    :initarg :key
+    :type keyword
+    :documentation "A keyword that is supposed to be an option, but isn't.")
+   (syntax
+    :accessor syntax
+    :initarg :syntax
+    :type keyword
+    :documentation "The syntax you tried to find key for.")
+   (options
+    :accessor options
+    :initarg :options
+    :type list
+    :documentation "The list of valid options."))
+  (:documentation "This is signalled when the user has provided an option that doesnt
+exist for that markdown")
+  (:report
+   (lambda (obj stream)
+     (format stream "That option doesn't exist for that syntax.~%Syntax: ~A. Key: ~A. ~
+                     Valid options: ~A.~%Message: ~A."
+             (syntax obj)
+             (key obj)
+             (options obj)
              (message obj)))))
 
 (defun new-inline-syntax (key before-fun after-fun)
@@ -124,25 +154,26 @@ then signals the condition 'key-missing-fun."
                           :message "couldn't find key. Perhaps your List is invalid."))))
 
 (defun add-spacing (stream env)
-  (let ((current-space (getf env :current-depth)))
-    (unless (zerop current-space))
-    (format stream "~A" (make-string (getf env :current-depth) :initial-element #\Space))))
+  (let ((current-depth (getf env :current-depth)))
+    (unless (<= current-depth 1)
+      (format stream "~A" (make-string *default-tab-size*
+                                       :initial-element #\Space)))))
 
-(defun indent (env)
-  "Increment :current-depth by 4."
-  (incf (getf env :current-depth) 4))
+(defun increase-depth (env)
+  "Increment :current-depth by 1."
+  (incf (getf env :current-depth)))
 
-(defun remove-indent (env)
-  "Unless :current-depth is already 0, remove 4."
+(defun decrease-depth (env)
+  "Unless :current-depth is already 0, remove 1."
   (unless (zerop (getf env :current-depth))
-    (decf (getf env :current-depth) 4)))
+    (decf (getf env :current-depth))))
 
-(defmacro with-indenting (env &body body)
-  "Evaluates BODY after incrementing :current-depth by 4, after evaluation decrements 
-:current-depth by 4."
-  `(unwind-protect (progn (indent ,env)
+(defmacro with-increased-depth (env &body body)
+  "Evaluates BODY after incrementing :current-depth by 1, after evaluation decrements 
+:current-depth by ."
+  `(unwind-protect (progn (increase-depth ,env)
                           (locally ,@body))
-     (remove-indent ,env)))
+     (decrease-depth ,env)))
 
 ;;;a list of all the syntax rules that I'm aware of so far.
 
@@ -186,16 +217,17 @@ then signals the condition 'key-missing-fun."
   (format stream ">>~A" string))
 
 (def-syntax (:ordered-list string env)
+  ;;  (setf (getf env :disable-before-p) t)
   (let ((item-n (getf env :item-n)))
     (format stream "~D. ~A" item-n string)
     (incf (getf env :item-n))))
 
 (def-syntax (:unordered-list string env)
+  ;;(setf (getf env :disable-before-p) t)
   (format stream "- ~A" string))
 
 (def-syntax (:code-block string env)
-  (with-indenting env
-    (format stream "```~A```" string)))
+  (format stream "```~A```" string))
 
 (def-syntax (:image string env (:href))
   (format stream "![~A](~A)" string href))
@@ -209,8 +241,8 @@ then signals the condition 'key-missing-fun."
   (format stream "***"))
 
 (def-syntax (:linked-image string env (:path :description :href))
-  (format stream "[![~A](~A \"~A\")](~A)" string path description href)
-  (print href *debug-io*))
+  (print path *debug-io*)
+  (format stream "[![~A](~A \"~A\")](~A)" string path description href))
 
 (def-syntax (:%special string env ())
   (funcall (gethash string *specials*) stream env))
@@ -229,13 +261,17 @@ then signals the condition 'key-missing-fun."
                    (format stream "*")
                    (format stream "*"))
 
-(def-inline-syntax (:bold-and-italic form env)
-                   (format stream "***")
-                   (format stream "***"))
+(def-inline-syntax (:ordered-list form env)
+                   (add-spacing stream env)
+                   (format stream ""))
 
 (def-inline-syntax (:unordered-list form env)
                    (format stream "- ")
-                   (format stream " "))
+                   (format stream ""))
+
+(def-inline-syntax (:bold-and-italic form env)
+                   (format stream "***")
+                   (format stream "***"))
 
 (def-inline-syntax (:blockquote form env)
                    (format stream "> ")
@@ -272,9 +308,15 @@ then searches for those options within LIST. If it has no options returns nil."
 like  (:link :href \"https://oof.com\" \"ooga\") should eval to a list like: 
 '(:href \"https://oof.com\")."
   (let ((keys (getf (getf *syntax* (first list)) :options)))
-    (loop :for key :in keys
-          :if (find key (rest list))
-            :appending (list key (getf (rest list) key)))))
+    (loop :for (key val) :on (rest list) :by #'cddr
+          :if (and (keywordp key)
+                   (find key keys))
+            :appending (list key val) :into options
+          :else :if (stringp key)
+                  :collect key :into remainder
+          :else :do (error 'unknown-option :syntax (first list) :key key 
+                                           :options keys :message "Bad key")
+          :finally (return (values options remainder)))))
 
 (defmacro with-resetting-keys (environment keys &body body)
   "Stores the values associated with KEYS found in the plist ENVIRONMENT, 
@@ -356,23 +398,30 @@ with ((list list)) and making sure you return the list."))
         (null
          (pop (getf environment :current-inline))
          nil)
-        (string
+        (string         
          (%execute-inlines stream item environment (or (rest current-inline)
                                                        current-inline))
          (%process-list stream remainder environment))
         (list
-         (%process-list stream item environment)
+         (if (or (eql (first item) :ordered-list)
+                 (eql (first item) :unordered-list))
+             (with-resetting-keys environment (item-n current-depth)
+               (when (eql (first item) :ordered-list)
+                 (setf (getf environment :item-n) 1));reset when inside a new ordered-list
+               (increase-depth environment)
+               (%process-list stream item environment))
+             (progn 
+               (%process-list stream item environment)))
          (%process-list stream remainder environment))
         (keyword
-         (with-resetting-keys environment (current-syntax options)
+         (with-resetting-keys environment (current-syntax options item-n)
            (push (get-inline item) (getf environment :current-inline))
            (setf (getf environment :current-syntax) (getf *syntax* item))
            (if (contains-options-p list)
-               (let ((options (extract-options list)))
+               (multiple-value-bind (options remainder)
+                   (extract-options list)
                  (setf (getf environment :options) options)
-                 (%process-list stream
-                                (set-difference remainder options :test #'equal)
-                                environment))
+                 (%process-list stream remainder environment))
                (%process-list stream remainder environment))))))))
 
 (defun %execute-inlines (stream item environment inlines)
@@ -382,13 +431,15 @@ with ((list list)) and making sure you return the list."))
     (mapc (lambda (inline)
             (destructuring-bind (&key before &allow-other-keys)
                 inline
-              (funcall before stream item environment)))
+              (unless (getf environment :disable-before-p)
+                (funcall before stream item environment))))
           (reverse inlines))
     (funcall fun stream item environment)
     (mapc (lambda (inline)
             (destructuring-bind (&key after &allow-other-keys)
                 inline
-              (funcall after stream item environment)))
+              (unless (getf environment :disable-after-p)
+                (funcall after stream item environment))))
           inlines)))
 
 (defparameter *md*
@@ -414,28 +465,32 @@ with ((list list)) and making sure you return the list."))
      (:italic "oof"))    
     (:unordered-list
      "link1"
-     (:bold-and-italic (:link :href "https://oof.com" "ooga"))
-     (:unordered-list "abc"))
+     "oof"
+     ;;     (:bold-and-italic (:link :href "https://oof.com" "ooga"))
+     (:unordered-list
+      "abc"
+      "def"))
     (:code-block "oof")
     (:h2 "abcd")
     (:link :href "https://oof.com" "ooga")
+    ""
     (:linked-image
      :path "~/oof.jpg"
      :description "an oof image"
      :href "imgur.com/oof"
      "an oof image")
-    (:unordered-list "def")
-    (:unordered-list "abc")    
+    (:ordered-list "next list"
+     (:ordered-list "def" "abc"))
     (:ordered-list 
      "oof"
      "boof")
-    (:ordered-list "boof"
-     (:unordered-list "coof")
-     (:unordered-list
-      (:h2 "omega based")))
+    (:ordered-list "next list"
+     (:unordered-list "1" (:h1 "2") "3"
+      (:ordered-list "next-list")))
     "lu lu lu I want some apples"
     (:bold "bold")
     (:italic "italic")
+    (:ordered-list "1" "2" "3")
     (:blockquote
      "abc"
      "def")))
